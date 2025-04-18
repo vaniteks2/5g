@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: admin-backend
+    env: python
+    region: singapore
+    buildCommand: pip install -r requirements.txt
+    startCommand: ./start.sh
+    envVars:
+      - key: SUPABASE_URL
+        value: https://xxxxx.supabase.co
+      - key: SUPABASE_KEY
+        value: your-secret-api-key
