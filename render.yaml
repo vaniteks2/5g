@@ -1,12 +1,16 @@
 services:
   - type: web
-    name: admin-backend
-    env: python
-    region: singapore
-    buildCommand: pip install -r requirements.txt
-    startCommand: ./start.sh
+    name: supabase-admin-auth-api
+    env: node
+    buildCommand: npm install
+    startCommand: node server.js
     envVars:
       - key: SUPABASE_URL
-        value: https://xxxxx.supabase.co
-      - key: SUPABASE_KEY
-        value: your-secret-api-key
+        sync: false
+      - key: SUPABASE_SERVICE_KEY
+        sync: false
+      - key: JWT_SECRET
+        sync: false
+      - key: PORT
+        value: 10000
+    healthCheckPath: /health
