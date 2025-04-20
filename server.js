@@ -367,6 +367,324 @@ app.put('/api/admins/password', authenticateToken, async (req, res) => {
   }
 });
 
+// Telegram group management endpoints
+const { Telegraf } = require('telegraf');
+
+// Get all telegram groups
+app.get('/api/telegram-groups', authenticateToken, async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from('telegram_groups')
+      .select('*')
+      .order('created_at', { ascending: false });
+
+    if (error) {
+      return res.status(500).json({ message: 'Database error', error });
+    }
+
+    res.json({ groups: data });
+  } catch (error) {
+    console.error('Get telegram groups error:', error);
+    res.status(500).json({ message: 'Server error', error: error.message });
+  }
+});
+
+// Add new telegram group
+app.post('/api/telegram-groups', authenticateToken, async (req, res) => {
+  try {
+    const { group_name, group_id, username, bot_token } = req.body;
+
+    // Input validation
+    if (!group_name || !group_id || !bot_token) {
+      return res.status(400).json({ message: 'Group name, ID and bot token are required' });
+    }
+
+    // Test the bot token by getting chat info
+    try {
+      const bot = new Telegraf(bot_token);
+      const chat = await bot.telegram.getChat(group_id);
+      
+      if (!chat) {
+        return res.status(400).json({ message: 'Invalid group ID or bot token' });
+      }
+      
+      // Get member count
+      let memberCount = 0;
+      if (chat.type === 'channel') {
+        // For channels, we can't get exact member count through API
+        memberCount = -1; // Use -1 to indicate we need to check via botfather
+      } else {
+        // For groups, we can get member count
+        const chatMembers = await bot.telegram.getChatMembersCount(group_id);
+        memberCount = chatMembers;
+      }
+
+      // Add group to database
+      const { data, error } = await supabase
+        .from('telegram_groups')
+        .insert([{
+          group_name,
+          group_id,
+          username: username || null,
+          bot_token,
+          member_count: memberCount,
+          last_updated: new Date().toISOString(),
+          created_by: req.user.id
+        }])
+        .select();
+
+      if (error) {
+        return res.status(500).json({ message: 'Failed to add telegram group', error });
+      }
+
+      res.status(201).json({
+        message: 'Telegram group added successfully',
+        group: data[0]
+      });
+    } catch (botError) {
+      return res.status(400).json({ 
+        message: 'Failed to connect to Telegram. Please check your bot token and group ID.',
+        error: botError.message
+      });
+    }
+  } catch (error) {
+    console.error('Add telegram group error:', error);
+    res.status(500).json({ message: 'Server error', error: error.message });
+  }
+});
+
+// Update telegram group
+app.put('/api/telegram-groups/:id', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { group_name, group_id, username, bot_token } = req.body;
+
+    // Input validation
+    if (!group_name || !group_id || !bot_token) {
+      return res.status(400).json({ message: 'Group name, ID and bot token are required' });
+    }
+
+    // Test the bot token by getting chat info
+    try {
+      const bot = new Telegraf(bot_token);
+      const chat = await bot.telegram.getChat(group_id);
+      
+      if (!chat) {
+        return res.status(400).json({ message: 'Invalid group ID or bot token' });
+      }
+      
+      // Get member count
+      let memberCount = 0;
+      if (chat.type === 'channel') {
+        // For channels, we'll need to use different approach
+        memberCount = -1;
+      } else {
+        // For groups, we can get member count
+        const chatMembers = await bot.telegram.getChatMembersCount(group_id);
+        memberCount = chatMembers;
+      }
+
+      // Update group in database
+      const { data, error } = await supabase
+        .from('telegram_groups')
+        .update({
+          group_name,
+          group_id,
+          username: username || null,
+          bot_token,
+          member_count: memberCount,
+          last_updated: new Date().toISOString()
+        })
+        .eq('id', id)
+        .select();
+
+      if (error) {
+        return res.status(500).json({ message: 'Failed to update telegram group', error });
+      }
+
+      if (!data || data.length === 0) {
+        return res.status(404).json({ message: 'Group not found' });
+      }
+
+      res.json({
+        message: 'Telegram group updated successfully',
+        group: data[0]
+      });
+    } catch (botError) {
+      return res.status(400).json({ 
+        message: 'Failed to connect to Telegram. Please check your bot token and group ID.',
+        error: botError.message
+      });
+    }
+  } catch (error) {
+    console.error('Update telegram group error:', error);
+    res.status(500).json({ message: 'Server error', error: error.message });
+  }
+});
+
+// Delete telegram group
+app.delete('/api/telegram-groups/:id', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const { error } = await supabase
+      .from('telegram_groups')
+      .delete()
+      .eq('id', id);
+
+    if (error) {
+      return res.status(500).json({ message: 'Failed to delete telegram group', error });
+    }
+
+    res.json({ message: 'Telegram group deleted successfully' });
+  } catch (error) {
+    console.error('Delete telegram group error:', error);
+    res.status(500).json({ message: 'Server error', error: error.message });
+  }
+});
+
+// Refresh member count for a telegram group
+app.post('/api/telegram-groups/:id/refresh', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    // Get group from database
+    const { data: group, error: groupError } = await supabase
+      .from('telegram_groups')
+      .select('*')
+      .eq('id', id)
+      .single();
+
+    if (groupError || !group) {
+      return res.status(404).json({ message: 'Group not found' });
+    }
+
+    // Connect to Telegram API
+    try {
+      const bot = new Telegraf(group.bot_token);
+      
+      // Get chat info to verify bot access
+      const chat = await bot.telegram.getChat(group.group_id);
+      
+      if (!chat) {
+        return res.status(400).json({ message: 'Bot could not access group' });
+      }
+      
+      // Get member count
+      let memberCount = 0;
+      if (chat.type === 'channel') {
+        // For channels, we cannot get exact member count
+        memberCount = -1; // Use -1 to indicate we need to check via botfather
+      } else {
+        // For groups, we can get member count
+        const chatMembers = await bot.telegram.getChatMembersCount(group.group_id);
+        memberCount = chatMembers;
+      }
+
+      // Update group in database
+      const { data, error } = await supabase
+        .from('telegram_groups')
+        .update({
+          member_count: memberCount,
+          last_updated: new Date().toISOString()
+        })
+        .eq('id', id)
+        .select();
+
+      if (error) {
+        return res.status(500).json({ message: 'Failed to update member count', error });
+      }
+
+      res.json({
+        message: 'Member count refreshed successfully',
+        group: data[0]
+      });
+    } catch (botError) {
+      return res.status(400).json({ 
+        message: 'Failed to connect to Telegram. Please check your bot token and group ID.',
+        error: botError.message
+      });
+    }
+  } catch (error) {
+    console.error('Refresh member count error:', error);
+    res.status(500).json({ message: 'Server error', error: error.message });
+  }
+});
+
+// Refresh all groups member count
+app.post('/api/telegram-groups/refresh-all', authenticateToken, async (req, res) => {
+  try {
+    // Get all groups from database
+    const { data: groups, error: groupsError } = await supabase
+      .from('telegram_groups')
+      .select('*');
+
+    if (groupsError) {
+      return res.status(500).json({ message: 'Failed to fetch groups', error: groupsError });
+    }
+
+    const results = [];
+    // Process each group
+    for (const group of groups) {
+      try {
+        const bot = new Telegraf(group.bot_token);
+        
+        // Get chat info
+        const chat = await bot.telegram.getChat(group.group_id);
+        
+        // Get member count
+        let memberCount = 0;
+        if (chat.type === 'channel') {
+          memberCount = -1; // Use -1 to indicate we need to check via botfather
+        } else {
+          const chatMembers = await bot.telegram.getChatMembersCount(group.group_id);
+          memberCount = chatMembers;
+        }
+
+        // Update group in database
+        const { data, error } = await supabase
+          .from('telegram_groups')
+          .update({
+            member_count: memberCount,
+            last_updated: new Date().toISOString()
+          })
+          .eq('id', group.id)
+          .select();
+
+        if (error) {
+          results.push({
+            id: group.id,
+            success: false,
+            message: 'Database update failed',
+            error
+          });
+        } else {
+          results.push({
+            id: group.id,
+            success: true,
+            group: data[0]
+          });
+        }
+      } catch (botError) {
+        results.push({
+          id: group.id,
+          success: false,
+          message: 'Telegram API error',
+          error: botError.message
+        });
+      }
+    }
+
+    res.json({
+      message: 'Bulk refresh completed',
+      results
+    });
+  } catch (error) {
+    console.error('Refresh all groups error:', error);
+    res.status(500).json({ message: 'Server error', error: error.message });
+  }
+});
+
 // Start server
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
